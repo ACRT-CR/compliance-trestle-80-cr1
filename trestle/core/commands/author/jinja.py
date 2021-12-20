@@ -19,10 +19,9 @@ import logging
 import operator
 import pathlib
 import traceback
-import uuid
 from typing import Any, Dict, Optional
 
-from jinja2 import ChoiceLoader, DictLoader, Environment, FileSystemLoader
+from jinja2 import Environment, FileSystemLoader
 
 from ruamel.yaml import YAML
 
@@ -41,8 +40,6 @@ logger = logging.getLogger(__name__)
 
 class JinjaCmd(CommandPlusDocs):
     """Transform an input template to an output document using jinja templating."""
-
-    max_recursion_depth = 2
 
     name = 'jinja'
 
@@ -139,25 +136,12 @@ class JinjaCmd(CommandPlusDocs):
                 lut['catalog_interface'] = CatalogInterface(resolved_catalog)
                 lut['ssp_md_writer'] = ssp_writer
 
-            new_output = template.render(**lut)
-            output = ''
-            # This recursion allows nesting within expressions (e.g. an expression can contain jinja templates).
-            error_countdown = JinjaCmd.max_recursion_depth
-            while new_output != output and error_countdown > 0:
-                error_countdown = error_countdown - 1
-                output = new_output
-                random_name = uuid.uuid4()  # Should be random and not used.
-                dict_loader = DictLoader({str(random_name): new_output})
-                jinja_env = Environment(
-                    loader=ChoiceLoader([dict_loader, FileSystemLoader(template_folder)]),
-                    extensions=[MDCleanInclude, MDSectionInclude],
-                    autoescape=True,
-                    trim_blocks=True
-                )
-                template = jinja_env.get_template(str(random_name))
-                new_output = template.render(**lut)
+            # Render a trusted template exactly once to avoid recursive SSTI of untrusted data.
+            output = template.render(**lut)
 
+            # Validate the resolved output path to prevent path traversal.
             output_file = trestle_root / r_output_file
+            output_file.resolve().relative_to(trestle_root.resolve())
             output_file.open('w', encoding=const.FILE_ENCODING).write(output)
 
         except Exception as e:  # pragma: no cover
